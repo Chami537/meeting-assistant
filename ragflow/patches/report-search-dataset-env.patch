@@ -1,0 +1,35 @@
+diff --git a/api/db/services/report_search_service.py b/api/db/services/report_search_service.py
+index 592124c..9cffe62 100644
+--- a/api/db/services/report_search_service.py
++++ b/api/db/services/report_search_service.py
+@@ -37,16 +37,25 @@ from common.constants import StatusEnum, TaskStatus
+ from rag.utils.redis_conn import REDIS_CONN, RedisDistributedLock
+ 
+ 
++def _dataset_id_from_env(name: str, default: str) -> str:
++    """业务库的知识库 ID：读环境变量，没配就用生产库的 ID。变量名和入库程序共用，
++    一个环境里入库写到哪个库、搜索就搜哪个库。"""
++    dataset_id = os.getenv(name, "").strip() or default
++    if not re.fullmatch(r"[0-9a-fA-F]{32}", dataset_id):
++        raise RuntimeError(f"Invalid {name} value: {dataset_id}.")
++    return dataset_id.lower()
++
++
+ class ReportSearchService:
+     FILTER_FIELDS = ("industry", "company", "category", "institution")
+     OPTIONAL_FILTER_FIELDS = frozenset({"institution"})
+     ENUMERATED_METADATA_FIELDS = ("industry", "category", "institution")
+     TYPE_FACET_FIELD = "type"
+-    ANNOUNCEMENT_DATASET_ID = "11111111111111111111111111111111"
+-    ARCHIVE_DATASET_ID = "22222222222222222222222222222222"
+-    COMPANY_REPORT_DATASET_ID = "33333333333333333333333333333333"
+-    INDUSTRY_REPORT_DATASET_ID = "44444444444444444444444444444444"
+-    GENERAL_REPORT_DATASET_ID = "55555555555555555555555555555555"
++    ANNOUNCEMENT_DATASET_ID = _dataset_id_from_env("RAGFLOW_CNINFO_DATASET_ID", "11111111111111111111111111111111")
++    ARCHIVE_DATASET_ID = _dataset_id_from_env("ZSXQ_RAGFLOW_DATASET_ID", "22222222222222222222222222222222")
++    COMPANY_REPORT_DATASET_ID = _dataset_id_from_env("RAGFLOW_COMPANY_DATASET_ID", "33333333333333333333333333333333")
++    INDUSTRY_REPORT_DATASET_ID = _dataset_id_from_env("RAGFLOW_INDUSTRY_DATASET_ID", "44444444444444444444444444444444")
++    GENERAL_REPORT_DATASET_ID = _dataset_id_from_env("RAGFLOW_GENERAL_DATASET_ID", "55555555555555555555555555555555")
+     BUSINESS_SCOPE_DATASETS = {
+         "global": (
+             ANNOUNCEMENT_DATASET_ID,

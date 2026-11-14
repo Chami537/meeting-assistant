@@ -1,0 +1,79 @@
+# The offline stack: everything from one command, no GPU, no model account, no cloud. The transcription
+# service runs its synthetic engine (asr_service/fake_engine.py) and the API its extractive stand-in model
+# (backend/app/integrations/fake_llm.py); recordings live in a directory volume served by the API's own local
+# object storage (backend/app/integrations/local_storage.py). Copy .env.example to .env and set a password
+# and a LOCAL_STORAGE_SECRET first:
+#
+#     docker compose up -d --build          # postgres, redis, asr-service (fake), minutes-api (fake)
+#     curl http://127.0.0.1:8020/health/ready
+#     curl -s -X POST http://127.0.0.1:8021/v1/minutes -H 'content-type: application/json' \
+#       -d '{"title":"离线演示.m4a","segments":[{"start":0,"end":6,"speaker":"发言人1","text":"欢迎参加示例科技业绩交流会。三季度营业收入1.2亿元。"}]}'
+#
+# For the real stack: postgres and redis stay here; the transcription service runs from
+# asr_service/docker-compose.yml (GPU, Qwen3-ASR) and the API from backend/deploy/docker-compose.yml with
+# real LLM credentials in minutes.env.
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: meeting
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: meeting_assistant
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U meeting -d meeting_assistant"]
+      interval: 5s
+      retries: 10
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "127.0.0.1:6380:6379"
+    volumes:
+      - redis_data:/data
+    command: ["redis-server", "--appendonly", "yes"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 10
+  asr:
+    build:
+      context: .
+      dockerfile: asr_service/Dockerfile.fake
+    image: asr-service-offline:1
+    environment:
+      ASR_ENGINE: fake
+      ASR_QUEUE: 32
+    ports:
+      - "127.0.0.1:8020:8000"
+    restart: unless-stopped
+  api:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    image: minutes-api:1
+    environment:
+      DATABASE_URL: postgresql+asyncpg://meeting:${POSTGRES_PASSWORD}@postgres:5432/meeting_assistant
+      LLM_API: fake
+      ASR_PROVIDER: qwen
+      ASR_QWEN_URL: http://asr:8000
+      STORAGE_BACKEND: local
+      LOCAL_STORAGE_DIR: /data/objects
+      LOCAL_STORAGE_URL: http://api:8000  # the ASR service downloads presigned links from here
+      LOCAL_STORAGE_SECRET: ${LOCAL_STORAGE_SECRET:?Set LOCAL_STORAGE_SECRET in .env}
+      MEETING_PARSE_DB: /data/meeting_jobs.sqlite3
+      PUBLIC_BASE_URL: http://127.0.0.1:8021
+    ports:
+      - "127.0.0.1:8021:8000"
+    volumes:
+      - api-data:/data
+    depends_on:
+      - postgres
+      - asr
+    restart: unless-stopped
+volumes:
+  postgres_data:
+  redis_data:
+  api-data:

@@ -1,0 +1,22 @@
+# The transcription service's job API with the offline stand-in engine (ASR_ENGINE=fake): no GPU, no models,
+# no network. Same job API, same queue (429 + Retry-After when full), only the transcription is synthetic
+# (fake_engine.py). Use it to run the whole upload-to-minutes loop on a laptop, or to watch the queue fill
+# up by hand. From the directory holding asr_service/:
+#
+#     docker compose -f asr_service/docker-compose.fake.yml up -d --build
+name: asr-offline
+
+services:
+  asr-service:
+    build:
+      context: ..
+      dockerfile: asr_service/Dockerfile.fake
+    image: asr-service-offline:1
+    container_name: asr-service-offline
+    ports:
+      - "127.0.0.1:8020:8000"
+    environment:
+      ASR_ENGINE: fake
+      ASR_QUEUE: 32
+      ASR_FAKE_DELAY: 0  # seconds per job, for watching the queue fill up
+    restart: unless-stopped

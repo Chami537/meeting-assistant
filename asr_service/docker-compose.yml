@@ -1,0 +1,74 @@
+# Our transcription service on a GPU server: the Qwen3-ASR server and the job API in front of it. From the
+# directory holding asr_service/:
+#
+#     docker compose -f asr_service/docker-compose.yml up -d --build
+#
+# About 7 GB of GPU memory in all: Qwen reserves 10% of the card (6.2 GB measured), the job API's pause cutting
+# and speaker models take well under 1 GB; the aligner for sentence times, up to 2.5 GB, only while a job that
+# asked for them is aligned, and only when 3 GB are free (the card is shared). Models:
+# ${ASR_MODELS_DIR:-~/models}/Qwen3-ASR-0.6B, ${ASR_MODELS_DIR:-~/models}/modelscope, and
+# Qwen3-ForcedAligner-0.6B in the Docker volume qwen3-aligner (a data disk, not the root partition). Compose
+# refuses to start without that volume; an empty one only turns sentence times off. To create it with the model:
+#
+#     docker volume create qwen3-aligner && docker run --rm -v qwen3-aligner:/m asr-service:1 python3 -c \
+#       "from modelscope import snapshot_download as d; d('Qwen/Qwen3-ForcedAligner-0.6B', local_dir='/m/Qwen3-ForcedAligner-0.6B')"
+# For Fun-ASR instead (ASR_ENGINE=funasr) drop the qwen3-asr service: it would hold its 6 GB for nothing.
+name: asr
+
+services:
+  qwen3-asr:
+    image: qwenllm/qwen3-asr:latest
+    container_name: qwen3-asr
+    # Chunks are at most 25 s: 4096 tokens a request is plenty, and lets 10% of the card hold the cache
+    command: >
+      qwen-asr-serve /models/Qwen3-ASR-0.6B --served-model-name qwen3-asr-0.6b --host 0.0.0.0 --port 80
+      --gpu-memory-utilization 0.1 --max-model-len 4096
+    volumes:
+      - ${ASR_MODELS_DIR:-${HOME}/models}:/models:ro
+    shm_size: 4gb
+    restart: unless-stopped
+    healthcheck:  # no curl in this image
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:80/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 300s
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  asr-service:
+    build:
+      context: ..
+      dockerfile: asr_service/Dockerfile
+    image: asr-service:1
+    container_name: asr-service
+    ports:
+      - "8020:8000"
+    environment:
+      ASR_ENGINE: qwen
+      ASR_QWEN_URL: http://qwen3-asr:80
+      ASR_ALIGNER_DIR: /models/aligner/Qwen3-ForcedAligner-0.6B
+    volumes:
+      - ${ASR_MODELS_DIR:-${HOME}/models}/modelscope:/models/modelscope:ro
+      - qwen3-aligner:/models/aligner:ro
+    shm_size: 4gb
+    depends_on:  # started once Qwen answers (loading it takes about 2 minutes)
+      qwen3-asr:
+        condition: service_healthy
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+volumes:
+  qwen3-aligner:  # made by hand (see the top): compose must not create an empty one
+    external: true

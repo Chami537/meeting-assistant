@@ -1,0 +1,83 @@
+diff --git a/api/db/services/llm_service.py b/api/db/services/llm_service.py
+index 97bf17d..40bdafe 100644
+--- a/api/db/services/llm_service.py
++++ b/api/db/services/llm_service.py
+@@ -189,7 +189,7 @@ class LLMBundle(LLM4Tenant):
+ 
+         return txt
+ 
+-    def transcription_with_segments(self, audio, progress_callback=None):
++    def transcription_with_segments(self, audio, progress_callback=None, prompt=None):
+         if self.langfuse:
+             generation = self.langfuse.start_observation(
+                 trace_context=self.trace_context,
+@@ -199,10 +199,10 @@ class LLMBundle(LLM4Tenant):
+             )
+ 
+         if hasattr(self.mdl, "transcription_with_segments"):
+-            result, used_tokens = self.mdl.transcription_with_segments(
+-                audio,
+-                progress_callback=progress_callback,
+-            )
++            kwargs = {"progress_callback": progress_callback}
++            if prompt:  # only models that take context are given one
++                kwargs["prompt"] = prompt
++            result, used_tokens = self.mdl.transcription_with_segments(audio, **kwargs)
+         else:
+             txt, used_tokens = self.mdl.transcription(audio)
+             result = {
+diff --git a/rag/llm/sequence2txt_model.py b/rag/llm/sequence2txt_model.py
+index b0d947c..31815b0 100644
+--- a/rag/llm/sequence2txt_model.py
++++ b/rag/llm/sequence2txt_model.py
+@@ -288,12 +288,15 @@ class SYSTRANSeq2txt(Base):
+             "duration_after_vad": result.get("duration_after_vad"),
+         }
+ 
+-    def _sync_transcription(self, audio_path):
++    def _sync_transcription(self, audio_path, prompt=None):
++        data = {"model": self.model_name, "response_format": "verbose_json"}
++        if prompt:
++            data["prompt"] = prompt
+         with open(audio_path, "rb") as audio_file:
+             response = self.session.post(
+                 f"{self.base_url}/v1/audio/transcriptions",
+                 files={"file": (os.path.basename(audio_path), audio_file)},
+-                data={"model": self.model_name, "response_format": "verbose_json"},
++                data=data,
+                 timeout=(self.http_timeout, self.job_timeout),
+             )
+         self._raise_for_status(response, "synchronous transcription")
+@@ -330,7 +333,12 @@ class SYSTRANSeq2txt(Base):
+         except (requests.ConnectionError, requests.Timeout):
+             return self.session.get(url, timeout=self.http_timeout)
+ 
+-    def transcription_with_segments(self, audio_path, progress_callback=None):
++    def transcription_with_segments(self, audio_path, progress_callback=None, prompt=None):
++        """prompt: context for recognition, e.g. the document title. Sent to Qwen3-ASR only, which uses it to
++        spell the names in it (a company's name right 8 times instead of 0 on a 43-minute call). faster-whisper
++        takes it as initial_prompt and got worse on the same call: a hallucinated line and half a minute of
++        speech lost."""
++        if "qwen" not in (self.model_name or "").lower():
++            prompt = None
+         deadline = time.monotonic() + self.job_timeout
+         job_id = None
+         reservation_id = None
+@@ -364,6 +372,8 @@ class SYSTRANSeq2txt(Base):
+                             )
+ 
+                 data = {"model": self.model_name}
++                if prompt:
++                    data["prompt"] = prompt
+                 if reservation_id:
+                     data["reservation_id"] = reservation_id
+                 with open(audio_path, "rb") as audio_file:
+@@ -374,7 +384,7 @@ class SYSTRANSeq2txt(Base):
+                         timeout=self.http_timeout,
+                     )
+                 if response.status_code in {404, 405}:
+-                    result = self._sync_transcription(audio_path)
++                    result = self._sync_transcription(audio_path, prompt)
+                     break
+                 if response.status_code == 409 and reservation_id:
+                     reservation_id = None

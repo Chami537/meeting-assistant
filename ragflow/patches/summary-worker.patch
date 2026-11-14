@@ -1,0 +1,32 @@
+diff --git a/deploy.sh b/deploy.sh
+index bc63aac..398d243 100755
+--- a/deploy.sh
++++ b/deploy.sh
+@@ -50,6 +50,7 @@ PROCESSES=(
+   rag/svr/task_executor.py
+   rag/svr/task_executor_watchdog.py
+   rag/svr/sync_data_source.py
++  rag/svr/summary_worker.py
+   mcp/server/server.py
+   mcp/proxy/server.py
+ )
+diff --git a/entrypoint.sh b/entrypoint.sh
+index 8773120..9bff4ff 100644
+--- a/entrypoint.sh
++++ b/entrypoint.sh
+@@ -385,6 +385,15 @@ if [[ "${ENABLE_DATASYNC}" -eq 1 ]]; then
+     done &
+ fi
+ 
++# Short summaries of parsed PDFs (rag/svr/summary_worker.py). It idles unless SUMMARY_KB_IDS (in the
++# deployed .env) names knowledge bases, so turning it on or off is an .env change and a deploy.
++echo "Starting summary worker..."
++while true; do
++    launch "$PY" rag/svr/summary_worker.py &
++    wait;
++    sleep 1;
++done &
++
+ if [[ "${ENABLE_MCP_SERVER}" -eq 1 ]]; then
+     start_mcp_server
+ fi

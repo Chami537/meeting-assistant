@@ -1,0 +1,12 @@
+# Build context of backend/Dockerfile and asr_service/Dockerfile (both the repository root).
+**/.env
+**/__pycache__
+.venv
+.pytest_cache
+.ruff_cache
+*.egg-info
+archive
+scripts
+study
+ragflow
+tests

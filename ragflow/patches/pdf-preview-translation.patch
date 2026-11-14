@@ -1,0 +1,310 @@
+diff --git a/web/src/pages/pdf-evidence-preview/index.module.less b/web/src/pages/pdf-evidence-preview/index.module.less
+index 0849356..1eae6fd 100644
+--- a/web/src/pages/pdf-evidence-preview/index.module.less
++++ b/web/src/pages/pdf-evidence-preview/index.module.less
+@@ -78,6 +78,44 @@
+   }
+ }
+ 
++.sourceSwitch {
++  position: absolute;
++  z-index: 9;
++  top: 12px;
++  right: 40px;
++  display: flex;
++  padding: 2px;
++  border-radius: 6px;
++  background: rgb(32 35 39 / 90%);
++  box-shadow: 0 2px 8px rgb(0 0 0 / 30%);
++
++  button {
++    height: 28px;
++    padding: 0 12px;
++    border: 0;
++    border-radius: 4px;
++    color: #c9cdd2;
++    background: transparent;
++    font-size: 13px;
++    cursor: pointer;
++
++    &:hover {
++      color: #fff;
++    }
++
++    &:focus-visible {
++      outline: 1px solid #fff;
++      outline-offset: -1px;
++    }
++  }
++
++  .sourceActive,
++  .sourceActive:hover {
++    color: #1f2328;
++    background: #ffd34d;
++  }
++}
++
+ .ruler {
+   position: absolute;
+   z-index: 8;
+@@ -129,6 +167,11 @@
+     right: 11px;
+   }
+ 
++  .sourceSwitch {
++    top: 8px;
++    right: 32px;
++  }
++
+   .marker {
+     left: -14px;
+     width: 32px;
+diff --git a/web/src/pages/pdf-evidence-preview/index.tsx b/web/src/pages/pdf-evidence-preview/index.tsx
+index 0859064..8e1aac4 100644
+--- a/web/src/pages/pdf-evidence-preview/index.tsx
++++ b/web/src/pages/pdf-evidence-preview/index.tsx
+@@ -27,6 +27,11 @@ interface PreviewResponse {
+   };
+ }
+ 
++interface TranslationResponse {
++  code: number;
++  data?: { available?: boolean };
++}
++
+ interface PdfDocument {
+   numPages: number;
+   getPage: (pageNumber: number) => Promise<{
+@@ -68,8 +73,12 @@ export default function PdfEvidencePreview() {
+   const [loading, setLoading] = useState(true);
+   const [reloadKey, setReloadKey] = useState(0);
+   const [highlighterReady, setHighlighterReady] = useState(false);
++  const [hasTranslation, setHasTranslation] = useState(false);
++  const [showTranslation, setShowTranslation] = useState(false);
+   const scrollToRef = useRef<(highlight: EvidenceHighlight) => void>(() => {});
+   const locatedInitialHighlightRef = useRef(false);
++  // 正在显示的那份 PDF。切换原文/译文后，上一份的页面尺寸可能晚到，按它认出来丢掉。
++  const currentPdfRef = useRef<PdfDocument | null>(null);
+ 
+   const query = useMemo(() => {
+     const values = {
+@@ -82,6 +91,32 @@ export default function PdfEvidencePreview() {
+ 
+   const metadataUrl = `/api/v1/chunk/pdf-preview?${query}`;
+   const fileUrl = `/api/v1/chunk/pdf-preview/file?${query}`;
++  const translationUrl = `/api/v1/chunk/pdf-preview/translation?${query}`;
++  const translationFileUrl = `/api/v1/chunk/pdf-preview/translation/file?${query}`;
++
++  // 换了一处证据（另一个 chunk）：从原文、从它的第一处高亮看起。
++  useEffect(() => {
++    setActiveId(null);
++    setHasTranslation(false);
++    setShowTranslation(false);
++  }, [query]);
++
++  // 译文是 RetainPDF 按原版面排的中文 PDF，页数、页面大小和原文一致，
++  // 所以证据高亮照原文坐标画在译文上也落在同一段。没有译文就不显示切换；
++  // 点重试时再问一次，上次可能只是没问到。
++  useEffect(() => {
++    const controller = new AbortController();
++    void fetch(translationUrl, { cache: 'no-store', signal: controller.signal })
++      .then(async (response) => (await response.json()) as TranslationResponse)
++      .then((payload) => {
++        const available =
++          payload.code === 0 && Boolean(payload.data?.available);
++        setHasTranslation(available);
++        if (!available) setShowTranslation(false);
++      })
++      .catch(() => undefined);
++    return () => controller.abort();
++  }, [translationUrl, reloadKey]);
+ 
+   useEffect(() => {
+     const controller = new AbortController();
+@@ -134,49 +169,76 @@ export default function PdfEvidencePreview() {
+     [highlights, pageSizes],
+   );
+ 
+-  const centerActiveHighlight = useCallback((highlightIndex: number) => {
+-    [120, 350, 700, 1500, 3000, 6000].forEach((delay) => {
+-      window.setTimeout(() => {
+-        const container =
+-          document.querySelector<HTMLElement>('.PdfHighlighter');
+-        const target =
+-          document.querySelectorAll<HTMLElement>('.Highlight__part')[
+-            highlightIndex
+-          ];
+-        if (!container || !target) return;
+-        const containerRect = container.getBoundingClientRect();
+-        const targetRect = target.getBoundingClientRect();
+-        container.scrollTop +=
+-          targetRect.top +
+-          targetRect.height / 2 -
+-          (containerRect.top + containerRect.height / 2);
+-      }, delay);
+-    });
++  // 阅读器刚挂上、各页还没建好时，react-pdf-highlighter 的 scrollTo 会直接抛错
++  // （读不到页面的 viewport），在 effect 里抛出去整页就白了。当这一下没滚到，
++  // 交给 centerActiveHighlight 后面的重试。
++  const scrollToHighlight = useCallback((highlight: EvidenceHighlight) => {
++    try {
++      scrollToRef.current(highlight);
++    } catch {
++      // 下一次重试再滚
++    }
+   }, []);
+ 
++  const centerActiveHighlight = useCallback(
++    (highlight: EvidenceHighlight, highlightIndex: number) => {
++      [120, 350, 700, 1500, 3000, 6000].forEach((delay) => {
++        window.setTimeout(() => {
++          const container =
++            document.querySelector<HTMLElement>('.PdfHighlighter');
++          const target =
++            document.querySelectorAll<HTMLElement>('.Highlight__part')[
++              highlightIndex
++            ];
++          if (!container) return;
++          // 阅读器刚挂上、页面还没排好时那一下滚动会落空（pdf.js：offsetParent
++          // is not set），高亮所在页也就一直没画出来；还没看到高亮就再滚一次。
++          // 打开页面和切换原文/译文都会遇到。
++          if (!target) {
++            scrollToHighlight(highlight);
++            return;
++          }
++          const containerRect = container.getBoundingClientRect();
++          const targetRect = target.getBoundingClientRect();
++          container.scrollTop +=
++            targetRect.top +
++            targetRect.height / 2 -
++            (containerRect.top + containerRect.height / 2);
++        }, delay);
++      });
++    },
++    [scrollToHighlight],
++  );
++
+   const activateHighlight = useCallback(
+     (highlightId: string) => {
+       const highlight = highlights.find((item) => item.id === highlightId);
+       if (!highlight) return;
+       const highlightIndex = highlights.indexOf(highlight);
+       setActiveId(highlightId);
+-      scrollToRef.current(highlight);
+-      centerActiveHighlight(highlightIndex);
++      scrollToHighlight(highlight);
++      centerActiveHighlight(highlight, highlightIndex);
+     },
+-    [centerActiveHighlight, highlights],
++    [centerActiveHighlight, highlights, scrollToHighlight],
+   );
+ 
+   const handlePdfReady = useCallback(
+     async (pdfDocument: PdfDocument) => {
++      currentPdfRef.current = pdfDocument;
+       if (pageSizes.length) return;
+-      const sizes = await Promise.all(
+-        Array.from({ length: pdfDocument.numPages }, async (_, index) => {
+-          const page = await pdfDocument.getPage(index + 1);
+-          const viewport = page.getViewport({ scale: 1 });
+-          return { width: viewport.width, height: viewport.height };
+-        }),
+-      );
+-      setPageSizes(sizes);
++      let sizes: PdfPageSize[];
++      try {
++        sizes = await Promise.all(
++          Array.from({ length: pdfDocument.numPages }, async (_, index) => {
++            const page = await pdfDocument.getPage(index + 1);
++            const viewport = page.getViewport({ scale: 1 });
++            return { width: viewport.width, height: viewport.height };
++          }),
++        );
++      } catch {
++        return; // 这份已经被换掉、销毁了
++      }
++      if (currentPdfRef.current === pdfDocument) setPageSizes(sizes);
+     },
+     [pageSizes.length],
+   );
+@@ -189,8 +251,19 @@ export default function PdfEvidencePreview() {
+     )
+       return;
+     locatedInitialHighlightRef.current = true;
+-    activateHighlight(highlights[0].id);
+-  }, [activateHighlight, highlighterReady, highlights]);
++    const current = highlights.find((highlight) => highlight.id === activeId);
++    activateHighlight((current ?? highlights[0]).id);
++  }, [activateHighlight, activeId, highlighterReady, highlights]);
++
++  const switchSource = (translated: boolean) => {
++    if (translated === showTranslation) return;
++    // 旧阅读器马上要被销毁，还没跑完的重试别再滚它
++    scrollToRef.current = () => {};
++    setPageSizes([]);
++    setHighlighterReady(false);
++    locatedInitialHighlightRef.current = false;
++    setShowTranslation(translated);
++  };
+ 
+   if (loading) {
+     return (
+@@ -210,8 +283,8 @@ export default function PdfEvidencePreview() {
+   return (
+     <main className={styles.viewer}>
+       <PdfLoader
+-        key={reloadKey}
+-        url={fileUrl}
++        key={`${reloadKey}-${showTranslation ? 'translation' : 'original'}`}
++        url={showTranslation ? translationFileUrl : fileUrl}
+         workerSrc="/pdfjs-dist/pdf.worker.min.js"
+         beforeLoad={
+           <div className={styles.loading}>
+@@ -220,7 +293,7 @@ export default function PdfEvidencePreview() {
+         }
+         errorMessage={
+           <PreviewError
+-            message="PDF 文件不存在"
++            message={showTranslation ? '译文 PDF 加载失败' : 'PDF 文件不存在'}
+             retry={() => setReloadKey((value) => value + 1)}
+           />
+         }
+@@ -251,6 +324,38 @@ export default function PdfEvidencePreview() {
+         }}
+       </PdfLoader>
+ 
++      {hasTranslation && (
++        <div
++          className={styles.sourceSwitch}
++          role="group"
++          aria-label="原文或译文"
++        >
++          {[
++            { translated: false, label: '原文', title: '原文' },
++            {
++              translated: true,
++              label: '译文',
++              title: '机器翻译的中文版，高亮按原文版面标出',
++            },
++          ].map((option) => (
++            <button
++              key={option.label}
++              type="button"
++              title={option.title}
++              aria-pressed={showTranslation === option.translated}
++              className={
++                showTranslation === option.translated
++                  ? styles.sourceActive
++                  : undefined
++              }
++              onClick={() => switchSource(option.translated)}
++            >
++              {option.label}
++            </button>
++          ))}
++        </div>
++      )}
++
+       <nav className={styles.ruler} aria-label="命中位置">
+         {markers.map((marker) => (
+           <button

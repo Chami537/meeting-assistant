@@ -1,0 +1,12 @@
+# The transcription service's job API with the offline stand-in engine (ASR_ENGINE=fake): no GPU, no models,
+# no network. Same job API, same queue (429 + Retry-After when full), only the transcription is synthetic
+# (fake_engine.py). Built by docker-compose.fake.yml; by hand, from the repository root:
+#     docker build -f asr_service/Dockerfile.fake -t asr-service-offline:1 .
+FROM python:3.12-slim
+WORKDIR /srv
+COPY asr_service /srv/asr_service
+COPY backend/app/postprocess/glossary.csv /srv/glossary.csv
+RUN pip install --no-cache-dir "fastapi>=0.115" "uvicorn>=0.30" "python-multipart>=0.0.9"
+ENV ASR_ENGINE=fake ASR_GLOSSARY=/srv/glossary.csv PYTHONUNBUFFERED=1
+EXPOSE 8000
+CMD ["uvicorn", "asr_service.api:app", "--host", "0.0.0.0", "--port", "8000"]

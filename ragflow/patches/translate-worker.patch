@@ -1,0 +1,33 @@
+diff --git a/deploy.sh b/deploy.sh
+index 398d243..6773d05 100755
+--- a/deploy.sh
++++ b/deploy.sh
+@@ -45,6 +45,7 @@ CNINFO_ENV_OVERRIDE="${RAGFLOW_CNINFO_ENV_OVERRIDE:-}"
+ LINKED=(VERSION entrypoint.sh admin agent api common deepdoc mcp memory rag ragflow_utils tools web/dist .config)
+ # Python processes restarted on deploy, matched by their script argument.
+ PROCESSES=(
++  rag/svr/translate_worker.py
+   api/ragflow_server.py
+   admin/server/admin_server.py
+   rag/svr/task_executor.py
+diff --git a/entrypoint.sh b/entrypoint.sh
+index 9bff4ff..9ef8488 100644
+--- a/entrypoint.sh
++++ b/entrypoint.sh
+@@ -402,6 +402,16 @@ if [[ "${ENABLE_MCP_PROXY}" -eq 1 ]]; then
+     start_mcp_proxy
+ fi
+ 
++# Chinese translations of English PDFs by RetainPDF (rag/svr/translate_worker.py). It idles unless
++# TRANSLATE_KB_IDS, TRANSLATE_SINCE and RETAINPDF_URL are set in the deployed .env, like the summary worker.
++# Kept apart from the summary worker's lines so that each patch keeps its own context.
++echo "Starting translate worker..."
++while true; do
++    launch "$PY" rag/svr/translate_worker.py &
++    wait;
++    sleep 1;
++done &
++
+ 
+ if [[ "${ENABLE_TASKEXECUTOR}" -eq 1 ]]; then
+     if [[ "${ENABLE_TASKEXECUTOR_WATCHDOG}" -eq 1 ]]; then
